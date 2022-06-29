@@ -1,0 +1,6 @@
+make --dry-run --always-make --keep-going --print-directory
+make: Entering directory `/Users/konstantinaa/code/scheme-lsp'
+gsc -o lsp.exe -exe router.scm hello.scm ./deps/*
+ 
+make: Leaving directory `/Users/konstantinaa/code/scheme-lsp'
+ 
