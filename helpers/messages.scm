@@ -1,17 +1,16 @@
-(##include "helpers.scm")
 
-;; make this a table later?
-;; prob unnecessary tho
+
+; where tf do I put this file lol
 (define (get-message)
-     (list
-      'content-length
+     (list->table (list
+      (cons 'content-length
       (begin 
        (read-line (current-input-port) #\space)
-       (string->number (read-line (current-input-port) #\return)))
-      'json-as-string
+       (string->number (read-line (current-input-port) #\return))))
+      (cons 'json-as-table
       (begin
        (read-line (current-input-port) #\{)
-       (call-with-output-string 
+      (call-with-output-string 
         (lambda (p)
          (letrec 
           ((json-capturer 
@@ -26,4 +25,4 @@
                  (#t bracket-count))))
             'done))))
          (print port: p #\{)
-         (json-capturer 1)))))))
+         (json-capturer 1)))))))))
