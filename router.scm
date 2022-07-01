@@ -1,14 +1,9 @@
-(define-macro (while condition . body)
-    `(let loop ()
-        (cond (,condition 
-            (begin . ,body) (loop)))))
 
-(define output (open-output-file "/Users/konstantinaa/code/scheme-lsp/stuff.txt"))
+(##include "helpers.scm")
+(##include "messages.scm")
 
+(define output (open-output-file "/Users/konstantinaa/code/scheme-lsp/stuff.json"))
+;(print (string->json "{\"weed\": \"sus\"}"))
 (while #t
-    (begin 
-     (force-output output)
-     (let 
-        ((input (read (current-input-port))))
-         (begin ;(print input)
-         (write input output)))))
+    (force-output output)
+    (write (get-message) output))

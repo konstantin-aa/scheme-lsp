@@ -1,408 +1,334 @@
-;;;============================================================================
 
-;;; File: "json.scm"
+;;  MIT License
 
-;;; Copyright (c) 2011-2014 by Marc Feeley, All Rights Reserved.
+;  Copyright guenchi (c) 2018 - 2019 
+     
+;  Permission is hereby granted, free of charge, to any person obtaining a copy
+;  of this software and associated documentation files (the "Software"), to deal
+;  in the Software without restriction, including without limitation the rights
+;  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+;  copies of the Software, and to permit persons to whom the Software is
+;  furnished to do so, subject to the following conditions:
+     
+;  The above copyright notice and this permission notice shall be included in all
+;  copies or substantial portions of the Software.
+     
+;  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+;  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+;  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+;  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+;  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+;  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+;  SOFTWARE.
 
-;;;============================================================================
+(define vector->alist		
+    (lambda (x)		
+      (let l ((x (vector->list x))(n 0))		
+        (cons (cons n (car x)) 		
+          (if (null? (cdr x))		
+            '()		
+            (l (cdr x) (+ n 1)))))))
+ 
+  (define (loose-car pair-or-empty)
+    (if (eq? '() pair-or-empty)
+        '()
+        (car pair-or-empty)))
 
-(declare
-  (standard-bindings)
-  (extended-bindings)
-  (block)
-  (fixnum)
-  (not safe)
-)
+  (define (loose-cdr pair-or-empty)
+    (if (eq? '() pair-or-empty)
+        '()
+        (cdr pair-or-empty)))
 
-;;;============================================================================
+  (define (string-length-sum strings)
+    (let loop ((o 0)
+               (rest strings))
+      (cond
+       ((eq? '() rest) o)
+       (else
+        (loop (+ o (string-length (car rest)))
+              (cdr rest))))))
 
-(define use-symbols? #f) ;; how to encode JS true, false and null
-(define use-tables? #t)  ;; how to encode JS objects
+  (define (fast-string-list-append strings)
+    (let* ((output-length (string-length-sum strings))
+           (output (make-string output-length #\_))
+           (fill 0))
+      (let outer ((rest strings))
+        (cond
+         ((eq? '() rest) output)
+         (else
+          (let* ((s (car rest))
+                 (n (string-length s)))
+            (let inner ((i 0))
+              (cond ((= i n) 'done)
+                    (else
+                     (string-set! output fill (string-ref s i))
+                     (set! fill (+ fill 1))
+                     (inner (+ i 1))))))
+          (outer (cdr rest)))))))
 
-(define debug? #f)
-
-(if debug?
-    (set! ##wr
-          (lambda (we obj)
-            (##default-wr
-             we
-             (if (table? obj)
-                 (cons 'TABLE (table->list obj))
-                 obj)))))
-
-(define (json-decode str)
-  (call-with-input-string str json-read))
-
-(define (json-encode obj)
-  (call-with-output-string "" (lambda (port) (json-write obj port))))
-
-(define (json-read port)
-
-  (define (create-object props)
-    (if use-tables?
-        (list->table props)
-        props))
-
-  (define (create-array elements)
-    (list->vector elements))
-
-  (define (rd)
-    (read-char port))
-
-  (define (pk)
-    (peek-char port))
-
-  (define (accum c i str)
-    (if (not (json-error? str))
-        (string-set! str i c))
-    str)
-
-  (define (digit? c radix)
-    (and (char? c)
-         (let ((n
-                (cond ((and (char>=? c #\0) (char<=? c #\9))
-                       (- (char->integer c) (char->integer #\0)))
-                      ((and (char>=? c #\a) (char<=? c #\z))
-                       (+ 10 (- (char->integer c) (char->integer #\a))))
-                      ((and (char>=? c #\A) (char<=? c #\Z))
-                       (+ 10 (- (char->integer c) (char->integer #\A))))
-                      (else
-                       999))))
-           (and (< n radix)
-                n))))
-
-  (define (space)
-    (let ((c (pk)))
-      (if (and (char? c)
-               (char<=? c #\space))
-          (begin (rd) (space)))))
-
-  (define (parse-value)
-    (space)
-    (let ((c (pk)))
-      (if (not (char? c))
-          json-error
-          (cond ((eqv? c #\{)
-                 (parse-object))
-                ((eqv? c #\[)
-                 (parse-array))
-                ((eqv? c #\")
-                 (parse-string))
-                ((or (eqv? c #\-) (digit? c 10))
-                 (parse-number))
-                ((eqv? c #\f)
-                 (rd)
-                 (if (not (and (eqv? (rd) #\a)
-                               (eqv? (rd) #\l)
-                               (eqv? (rd) #\s)
-                               (eqv? (rd) #\e)))
-                     json-error
-                     (if use-symbols?
-                         'false
-                         #f)))
-                ((eqv? c #\t)
-                 (rd)
-                 (if (not (and (eqv? (rd) #\r)
-                               (eqv? (rd) #\u)
-                               (eqv? (rd) #\e)))
-                     json-error
-                     (if use-symbols?
-                         'true
-                         #t)))
-                ((eqv? c #\n)
-                 (rd)
-                 (if (not (and (eqv? (rd) #\u)
-                               (eqv? (rd) #\l)
-                               (eqv? (rd) #\l)))
-                     json-error
-                     (if use-symbols?
-                         'null
-                         '())))
-                (else
-                 json-error)))))
-
-  (define (parse-object)
-    (rd) ;; skip #\{
-    (space)
-    (if (eqv? (pk) #\})
-        (begin (rd) (create-object '()))
-        (let loop ((rev-elements '()))
-          (let ((str (if (not (eqv? (pk) #\")) json-error (parse-string))))
-            (if (json-error? str)
-                str
-                (begin
-                  (space)
-                  (if (not (eqv? (pk) #\:))
-                      json-error
-                      (begin
-                        (rd)
-                        (space)
-                        (let ((val (parse-value)))
-                          (if (json-error? val)
-                              val
-                              (let ((new-rev-elements
-                                     (cons (cons str val) rev-elements)))
-                                (space)
-                                (let ((c (pk)))
-                                  (cond ((eqv? c #\})
-                                         (rd)
-                                         (create-object
-                                          (reverse new-rev-elements)))
-                                        ((eqv? c #\,)
-                                         (rd)
-                                         (space)
-                                         (loop new-rev-elements))
-                                        (else
-                                         json-error))))))))))))))
-
-  (define (parse-array)
-    (rd) ;; skip #\[
-    (space)
-    (if (eqv? (pk) #\])
-        (begin (rd) (create-array '()))
-        (let ((x (parse-value)))
-          (if (json-error? x)
-              x
-              (let loop ((rev-elements (list x)))
-                (space)
-                (let ((c (pk)))
-                  (cond ((eqv? c #\])
-                         (rd)
-                         (create-array (reverse rev-elements)))
-                        ((eqv? c #\,)
-                         (rd)
-                         (let ((y (parse-value)))
-                           (if (json-error? y)
-                               y
-                               (loop (cons y rev-elements)))))
-                        (else
-                         json-error))))))))
-
-  (define (parse-string)
-
-    (define (parse-str pos)
-      (let ((c (rd)))
-        (cond ((eqv? c #\")
-               (make-string pos))
-              ((eqv? c #\\)
-               (let ((x (rd)))
-                 (if (eqv? x #\u)
-                     (let loop ((n 0) (i 4))
-                       (if (> i 0)
-                           (let ((h (rd)))
-                             (cond ((not (char? h))
-                                    json-error)
-                                   ((digit? h 16)
-                                    =>
-                                    (lambda (d)
-                                      (loop (+ (* n 16) d) (- i 1))))
-                                   (else
-                                    json-error)))
-                           (accum (integer->char n) pos (parse-str (+ pos 1)))))
-                     (let ((e (assv x json-string-escapes)))
-                       (if e
-                           (accum (cdr e) pos (parse-str (+ pos 1)))
-                           json-error)))))
-              ((char? c)
-               (accum c pos (parse-str (+ pos 1))))
+ 
+  (define string->json
+    (lambda (s)
+      (read (open-input-string
+        (let l
+          ((s s)(bgn 0)(end 0)(rst '())(len (string-length s))(quts? #f)(lst '(#t)))
+          (cond
+            ((= end len)
+              (fast-string-list-append (reverse rst)))
+            ((and quts? (not (char=? (string-ref s end) #\")))
+              (l s bgn (+ 1 end) rst len quts? lst))
+            (else
+              (case (string-ref s end)
+              ((#\{)
+                (l s (+ 1 end) (+ 1 end) 
+                  (cons 
+                    (string-append 
+                      (substring s bgn end) "((" ) rst) len quts? (cons #t lst)))
+              ((#\})
+                (l s (+ 1 end) (+ 1 end) 
+                  (cons 
+                    (string-append 
+                      (substring s bgn end) "))") rst) len quts? (loose-cdr lst)))
+              ((#\[)
+                (l s (+ 1 end) (+ 1 end) 
+                  (cons
+                    (string-append 
+                      (substring s bgn end) "#(") rst) len quts? (cons #f lst)))
+              ((#\])
+                (l s (+ 1 end) (+ 1 end) 
+                  (cons 
+                    (string-append 
+                      (substring s bgn end) ")") rst) len quts? (loose-cdr lst)))
+              ((#\:)
+                (l s (+ 1 end) (+ 1 end) 
+                  (cons 
+                    (string-append 
+                      (substring s bgn end) " . ") rst) len quts? lst))
+              ((#\,)
+                (l s (+ 1 end) (+ 1 end) 
+                  (cons 
+                    (string-append 
+                      (substring s bgn end) 
+                      (if (loose-car lst) ")(" " ")) rst) len quts? lst))
+              ((#\")
+                (l s bgn (+ 1 end) rst len (not quts?) lst))
               (else
-               json-error))))
+                (l s bgn (+ 1 end) rst len quts? lst))))))))))
 
-    (rd) ;; skip #\"
-    (parse-str 0))
+                
+  (define json->string
+    (lambda (lst)
+      (define f
+        (lambda (x)
+          (cond 		          
+            ((string? x) (string-append "\"" x "\""))		             
+            ((number? x) (number->string x))		             
+            ((symbol? x) (symbol->string x)))))
+      (define c
+        (lambda (x)
+          (if (= x 0) "" ",")))
+      (let l ((lst lst)(x (if (vector? lst) "[" "{")))
+        (if (vector? lst)
+          (string-append x 
+            (let t ((len (vector-length lst))(n 0)(y ""))
+              (if (< n len)
+                (t len (+ n 1)
+                  (let ((k (vector-ref lst n)))
+                    (if (atom? k)
+                      (if (vector? k)
+                        (l k (string-append y (c n) "["))
+                        (string-append y (c n) (f k)))
+                      (l k (string-append y (c n) "{")))))
+                (string-append y "]"))))
+          (let ((k (cdar lst)))
+            (if (null? (cdr lst))
+              (string-append x "\"" (caar lst) "\":"
+                (cond 
+                  ((list? k)(l k "{"))
+                  ((vector? k)(l k "["))
+                  (else (f k))) "}")
+              (l (cdr lst)
+                (cond 
+                  ((list? k)(string-append x "\"" (caar lst) "\":" (l k "{") ","))
+                  ((vector? k)(string-append x "\"" (caar lst) "\":" (l k "[") ","))
+                  (else (string-append x "\"" (caar lst) "\":" (f k) ","))))))))))
+                
+                
+           
+  (define ref
+    (lambda (x k)
+      (define return
+        (lambda (x)
+          (if (symbol? x)
+            (cond
+              ((symbol=? x 'true) #t)
+              ((symbol=? x 'false) #f)
+              ((symbol=? x 'null) '())
+              (else x))
+            x)))
+      (if (vector? x)
+        (return (vector-ref x k))
+        (let l ((x x)(k k))
+          (if (null? x)
+            '()
+            (if (equal? (caar x) k)
+              (return (cdar x))
+              (l (cdr x) k)))))))
 
-  (define (parse-number)
+           
+           
+           
+  (define set
+    (lambda (x v p)
+      (let ((x x)(v v)(p (if (procedure? p) p (lambda (x) p))))
+        (if (vector? x)
+          (list->vector
+            (cond 
+              ((boolean? v)
+                (if v
+                  (let l ((x (vector->alist x))(p p))
+                    (if (null? x)
+                      '()
+                      (cons (p (cdar x)) (l (cdr x) p))))))
+              ((procedure? v)
+                (let l ((x (vector->alist x))(v v)(p p))
+                  (if (null? x)
+                    '()
+                    (if (v (caar x))
+                      (cons (p (cdar x)) (l (cdr x) v p))
+                      (cons (cdar x) (l (cdr x) v p))))))
+              (else
+                (let l ((x (vector->alist x))(v v)(p p))
+                  (if (null? x)
+                    '()
+                    (if (equal? (caar x) v)
+                      (cons (p (cdar x)) (l (cdr x) v p))
+                      (cons (cdar x) (l (cdr x) v p))))))))
+          (cond
+            ((boolean? v)
+              (if v
+                (let l ((x x)(p p))
+                  (if (null? x)
+                    '()
+                    (cons (cons (caar x) (p (cdar x)))(l (cdr x) p))))))
+            ((procedure? v)
+              (let l ((x x)(v v)(p p))
+                (if (null? x)
+                  '()
+                  (if (v (caar x))
+                    (cons (cons (caar x) (p (cdar x)))(l (cdr x) v p))
+                    (cons (car x) (l (cdr x) v p))))))
+            (else
+              (let l ((x x)(v v)(p p))
+                (if (null? x)
+                  '()
+                  (if (equal? (caar x) v)
+                    (cons (cons v (p (cdar x)))(l (cdr x) v p))
+                    (cons (car x) (l (cdr x) v p)))))))))))     
+           
+           
 
-    (define (sign-part)
-      (let ((c (pk)))
-        (if (eqv? c #\-)
-            (begin (rd) (accum c 0 (after-sign-part 1)))
-            (after-sign-part 0))))
+  (define push
+    (lambda (x k v)
+      (if (vector? x)
+        (if (= (vector-length x) 0)
+          (vector v)
+          (list->vector  
+            (let l ((x (vector->alist x))(k k)(v v)(b #f))
+              (if (null? x)
+                (if b '() (cons v '()))
+                (if (equal? (caar x) k)
+                  (cons v (cons  (cdar x) (l (cdr x) k v #t)))
+                  (cons (cdar x) (l (cdr x) k v b)))))))
+        (cons (cons k v) x))))
 
-    (define (after-sign-part pos)
-      (if (not (digit? (pk) 10))
-          json-error
-          (integer-part pos)))
 
-    (define (integer-part pos)
-      (let ((c (pk)))
-        (if (digit? c 10)
-            (begin (rd) (accum c pos (integer-part (+ pos 1))))
-            (if (eqv? c #\.)
-                (begin (rd) (accum c pos (decimals-part (+ pos 1))))
-                (exponent-part pos)))))
+           
+           
 
-    (define (decimals-part pos)
-      (let ((c (pk)))
-        (if (digit? c 10)
-            (begin (rd) (accum c pos (decimals-part (+ pos 1))))
-            (exponent-part pos))))
+  (define drop
+    (lambda (x v)
+      (if (vector? x)
+        (if (> (vector-length x) 0)
+          (list->vector
+            (cond
+              ((procedure? v)
+                (let l ((x (vector->alist x))(v v))
+                  (if (null? x)
+                    '()
+                    (if (v (caar x))
+                      (l (cdr x) v)
+                      (cons (cdar x) (l (cdr x) v))))))
+              (else 
+                (let l ((x (vector->alist x))(v v))
+                  (if (null? x)
+                    '()
+                    (if (equal? (caar x) v)
+                      (l (cdr x) v)
+                      (cons (cdar x) (l (cdr x) v)))))))))
+        (cond 
+          ((procedure? v)
+            (let l ((x x)(v v))
+              (if (null? x)
+                '()
+                (if (v (caar x))
+                  (l (cdr x) v)
+                  (cons (car x) (l (cdr x) v))))))
+          (else  
+            (let l ((x x)(v v))
+              (if (null? x)
+                '()
+                (if (equal? (caar x) v)
+                  (l (cdr x) v)
+                  (cons (car x) (l (cdr x) v))))))))))
 
-    (define (exponent-part pos)
-      (let ((c (pk)))
-        (if (or (eqv? c #\e) (eqv? c #\E))
-            (begin (rd) (accum c pos (exponent-sign-part (+ pos 1))))
-            (done pos))))
-
-    (define (exponent-sign-part pos)
-      (let ((c (pk)))
-        (if (or (eqv? c #\-) (eqv? c #\+))
-            (begin (rd) (accum c pos (exponent-after-sign-part (+ pos 1))))
-            (exponent-after-sign-part pos))))
-
-    (define (exponent-after-sign-part pos)
-      (if (not (digit? (pk) 10))
-          json-error
-          (exponent-integer-part pos)))
-
-    (define (exponent-integer-part pos)
-      (let ((c (pk)))
-        (if (digit? c 10)
-            (begin (rd) (accum c pos (exponent-integer-part (+ pos 1))))
-            (done pos))))
-
-    (define (done pos)
-      (make-string pos))
-
-    (let ((str (sign-part)))
-      (if (json-error? str)
-          str
-          (string->number str))))
-
-  (parse-value))
-
-(define (json-write obj port)
-
-  (define (wr-string s)
-    (display #\" port)
-    (let loop ((i 0) (j 0))
-      (if (< j (string-length s))
-          (let* ((c
-                  (string-ref s j))
-                 (n
-                  (char->integer c))
-                 (ctrl-char?
-                  (or (<= n 31) (>= n 127)))
-                 (x
-                  (cond ((or (char=? c #\\)
-                             (char=? c #\"))
-                         c)
-                        ((and ctrl-char?
-                              (##assq-cdr c json-string-escapes))
-                         =>
-                         car)
-                        (else
-                         #f)))
-                 (j+1
-                  (+ j 1)))
-            (if (or x ctrl-char?)
-                (begin
-                  (display (substring s i j) port)
-                  (display #\\ port)
-                  (if x
-                      (begin
-                        (display x port)
-                        (loop j+1 j+1))
-                      (begin
-                        (display #\u port)
-                        (display (substring (number->string (+ n #x10000) 16)
-                                            1
-                                            5)
-                                 port)
-                        (loop j+1 j+1))))
-                (loop i j+1)))
-          (begin
-            (display (substring s i j) port)
-            (display #\" port)))))
-
-  (define (wr-prop prop)
-    (wr-string (car prop))
-    (display ":" port)
-    (wr (cdr prop)))
-
-  (define (wr-object obj)
-    (wr-props (table->list obj)))
-
-  (define (wr-props lst)
-    (display "{" port)
-    (if (pair? lst)
-        (begin
-          (wr-prop (car lst))
-          (let loop ((lst (cdr lst)))
-            (if (pair? lst)
-                (begin
-                  (display "," port)
-                  (wr-prop (car lst))
-                  (loop (cdr lst)))))))
-    (display "}" port))
-
-  (define (wr-array obj)
-    (display "[" port)
-    (let loop ((i 0))
-      (if (< i (vector-length obj))
-          (begin
-            (if (> i 0) (display "," port))
-            (wr (vector-ref obj i))
-            (loop (+ i 1)))))
-    (display "]" port))
-
-  (define (wr-time obj)
-    ;; this works when using JavaScript's eval to decode the object
-    (display "new Date(" port)
-    (display (* 1000 (time->seconds obj)) port)
-    (display ")" port))
-
-  (define (wr obj)
-
-    (cond ((number? obj)
-           (write (if (integer? obj) obj (exact->inexact obj)) port))
-
-          ((string? obj)
-           (wr-string obj))
-
-          ((symbol? obj)
-           (display (symbol->string obj) port))
-
-          ((boolean? obj)
-           (display (if obj "true" "false") port))
-
-          ((and (not use-symbols?)
-                (null? obj))
-           (display "null" port))
-
-          ((or (null? obj)
-               (pair? obj))
-           (wr-props obj))
-
-          ((vector? obj)
-           (wr-array obj))
-
-          ((table? obj)
-           (wr-object obj))
-
-          ((time? obj)
-           (wr-time obj))
-
-          (else
-           (error "unwritable object" obj))))
-
-  (wr obj))
-
-(define json-string-escapes
-  '((#\" . #\")
-    (#\\ . #\\)
-    (#\/ . #\/)
-    (#\b . #\x08)
-    (#\t . #\x09)
-    (#\n . #\x0A)
-    (#\v . #\x0B)
-    (#\f . #\x0C)
-    (#\r . #\x0D)))
-
-(define json-error
-  'json-error)
-
-(define (json-error? x)
-  (eq? x json-error))
-
-;;;============================================================================
+          
+           
+           
+          
+  (define reduce
+    (lambda (x v p)
+        (if (vector? x)
+          (list->vector
+            (cond 
+              ((boolean? v)
+                (if v
+                  (let l ((x (vector->alist x))(p p))
+                    (if (null? x)
+                      '()
+                      (cons (p (caar x) (cdar x)) (l (cdr x) p))))))
+              ((procedure? v)
+                (let l ((x (vector->alist x))(v v)(p p))
+                  (if (null? x)
+                    '()
+                    (if (v (caar x))
+                      (cons (p (caar x) (cdar x)) (l (cdr x) v p))
+                      (cons (cdar x) (l (cdr x) v p ))))))
+              (else
+                (let l ((x (vector->alist x))(v v)(p p))
+                  (if (null? x)
+                    '()
+                    (if (equal? (caar x) v)
+                      (cons (p (caar x) (cdar x)) (l (cdr x) v p))
+                      (cons (cdar x) (l (cdr x) v p ))))))))
+          (cond
+            ((boolean? v)
+              (if v
+                (let l ((x x)(p p))
+                  (if (null? x)
+                    '()
+                    (cons (cons (caar x) (p (caar x) (cdar x)))(l (cdr x) p))))))
+            ((procedure? v)
+              (let l ((x x)(v v)(p p))
+                (if (null? x)
+                  '()
+                  (if (v (caar x))
+                    (cons (cons (caar x) (p (caar x) (cdar x)))(l (cdr x) v p))
+                    (cons (car x) (l (cdr x) v p ))))))
+            (else
+              (let l ((x x)(v v)(p p))
+                (if (null? x)
+                  '()
+                  (if (equal? (caar x) v)
+                    (cons (cons v (p v (cdar x)))(l (cdr x) v p))
+                    (cons (car x) (l (cdr x) v p))))))))))
